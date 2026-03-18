@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-This PowerShell script disables Internet Explorer 11 as a standalone browser on Windows 11.
+This PowerShell script disables Internet Explorer 11 as a standalone browser on Windows 11,
+applies related policy-backed registry settings, refreshes Group Policy, and validates the configuration.
 
 .NOTES
 Author            : Felix Tafoya
@@ -8,7 +9,7 @@ LinkedIn          : linkedin.com/in/felixtafoya/
 GitHub            : github.com/felixtafoya
 Date Created      : 2026-03-17
 Last Modified     : 2026-03-17
-Version           : 1.1
+Version           : 1.3
 CVEs              : N/A
 Plugin IDs        : N/A
 STIG-ID           : WN11-CC-000391
@@ -34,10 +35,14 @@ if (-not ([Security.Principal.WindowsPrincipal] `
     exit 1
 }
 
-# Define registry path and value
+# Define registry path and values
 $registryPath = "HKLM:\SOFTWARE\Policies\Microsoft\Internet Explorer\Main"
-$valueName    = "DisableInternetExplorerApp"
-$valueData    = 1
+
+$settings = @{
+    "DisableInternetExplorerApp" = 1
+    "NotifyDisableIEOptions"     = 1
+    "HideInternetExplorer"       = 1
+}
 
 Write-Host "Checking registry path..." -ForegroundColor Cyan
 
@@ -52,38 +57,64 @@ if (-not (Test-Path $registryPath)) {
     }
 }
 
-Write-Host "Applying STIG setting..." -ForegroundColor Cyan
+Write-Host "Applying IE disable policy..." -ForegroundColor Cyan
 
+# Apply all required values
 try {
-    New-ItemProperty -Path $registryPath `
-        -Name $valueName `
-        -PropertyType DWord `
-        -Value $valueData `
-        -Force | Out-Null
+    foreach ($name in $settings.Keys) {
+        New-ItemProperty -Path $registryPath `
+            -Name $name `
+            -PropertyType DWord `
+            -Value $settings[$name] `
+            -Force | Out-Null
+    }
 } catch {
-    Write-Host "ERROR: Failed to set registry value." -ForegroundColor Red
+    Write-Host "ERROR: Failed to set one or more registry values." -ForegroundColor Red
     exit 1
 }
 
 Start-Sleep -Seconds 1
 
-Write-Host "Validating setting..." -ForegroundColor Cyan
+Write-Host "Refreshing Group Policy..." -ForegroundColor Cyan
 
 try {
-    $result = Get-ItemProperty -Path $registryPath -Name $valueName -ErrorAction Stop
+    gpupdate /force | Out-Null
+    Write-Host "SUCCESS: Group Policy refreshed." -ForegroundColor Green
+} catch {
+    Write-Host "ERROR: Failed to refresh Group Policy." -ForegroundColor Red
+    exit 1
+}
 
-    if ($result.$valueName -eq $valueData) {
-        Write-Host "SUCCESS: Internet Explorer 11 is disabled as a standalone browser." -ForegroundColor Green
-    } else {
-        Write-Host "FAIL: Registry value '$valueName' is incorrect." -ForegroundColor Red
+Start-Sleep -Seconds 1
+
+Write-Host "Validating..." -ForegroundColor Cyan
+
+# Validate result safely
+try {
+    $result = Get-ItemProperty -Path $registryPath -ErrorAction Stop
+
+    $allValid = $true
+
+    foreach ($name in $settings.Keys) {
+        if ($result.$name -ne $settings[$name]) {
+            Write-Host "FAIL: Registry value '$name' is incorrect." -ForegroundColor Red
+            $allValid = $false
+        }
+    }
+
+    if (-not $allValid) {
         exit 1
     }
 
+    Write-Host "SUCCESS: Internet Explorer 11 policy settings were applied successfully." -ForegroundColor Green
     Write-Host ""
     Write-Host "Current configuration:" -ForegroundColor Cyan
-    $result | Select-Object $valueName
+    $result | Select-Object DisableInternetExplorerApp, NotifyDisableIEOptions, HideInternetExplorer
+
+    Write-Host ""
+    Write-Host "IMPORTANT: Reboot required before rescanning." -ForegroundColor Yellow
 
 } catch {
-    Write-Host "FAIL: Registry value '$valueName' not found." -ForegroundColor Red
+    Write-Host "FAIL: One or more registry values could not be validated." -ForegroundColor Red
     exit 1
 }
